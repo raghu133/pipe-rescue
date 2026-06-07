@@ -1,0 +1,20 @@
+# Unrelated to this project
+app.py/
+
+# Private (not part of the deliverable)
+SUBMISSION_EMAIL.md
+
+# Cocos Creator generated caches
+pipe-rescue-cocos/library/
+pipe-rescue-cocos/temp/
+pipe-rescue-cocos/local/
+pipe-rescue-cocos/build/
+pipe-rescue-cocos/profiles/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+node_modules/
+*.log
+*.zip
+pipe-rescue-cocos.zip

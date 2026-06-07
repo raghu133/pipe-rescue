@@ -1,0 +1,461 @@
+/*
+ * Pipe Rescue — standalone HTML5 playable ad
+ * ------------------------------------------------------------------
+ * Pure Canvas implementation (no engine runtime needed) so the build
+ * opens instantly in any browser. The game logic here is the same model
+ * used by the Cocos Creator TypeScript components in
+ * ../pipe-rescue-cocos/assets/scripts/ so behaviour matches.
+ *
+ * Pipe model
+ *   Sides are indexed 0=Up, 1=Right, 2=Down, 3=Left.
+ *   Each pipe type lists the sides that are "open" in its base rotation.
+ *   Rotating clockwise by `rot` (0..3) adds rot to every open side (mod 4).
+ *   Two adjacent tiles are connected if both have an opening on the
+ *   shared edge. The puzzle is solved when a chain of connected tiles
+ *   links the Start tile to the Goal tile.
+ *
+ * Layout follows the assessment wireframe: a full 4x4 grid (every cell is
+ * a pipe tile), a "Water Source / Start" at top-left and a "Goal / End" at
+ * the bottom. Tiles that aren't on the intended path are decoys the player
+ * can also rotate — only one route actually connects source to goal.
+ */
+(function () {
+  'use strict';
+
+  // ---- Tunable config -------------------------------------------------
+  var COLS = 4;
+  var ROWS = 4;
+  var MOVE_LIMIT = 12;
+
+  var TYPE = {
+    START: 'start',
+    GOAL: 'goal',
+    STRAIGHT: 'straight',
+    ELBOW: 'elbow'
+  };
+
+  // Open sides per type in base (rot 0) orientation.
+  var BASE_OPEN = {
+    start: [2],       // water flows down out of the source
+    goal: [0],        // water arrives from above
+    straight: [0, 2], // vertical
+    elbow: [1, 2]     // right + down (an "L")
+  };
+
+  // The one fixed, hand-authored puzzle. Full 4x4 grid. Verified: it does
+  // NOT connect at start and is solvable in ~7 taps (well within 12).
+  // Intended solution path:
+  //   start(0,0) -> (1,0) -> (2,0) -> (2,1) -> (2,2) -> goal(3,2)
+  function buildPuzzle() {
+    var P = function (t, r, fixed) { return { type: t, rot: r, fixed: !!fixed }; };
+    return [
+      [P(TYPE.START, 0, true), P(TYPE.ELBOW, 0),    P(TYPE.STRAIGHT, 1), P(TYPE.ELBOW, 0)],
+      [P(TYPE.STRAIGHT, 1),    P(TYPE.ELBOW, 2),    P(TYPE.STRAIGHT, 1), P(TYPE.STRAIGHT, 0)],
+      [P(TYPE.ELBOW, 0),       P(TYPE.STRAIGHT, 0), P(TYPE.ELBOW, 3),    P(TYPE.ELBOW, 2)],
+      [P(TYPE.STRAIGHT, 1),    P(TYPE.ELBOW, 1),    P(TYPE.GOAL, 0, true), P(TYPE.STRAIGHT, 0)]
+    ];
+  }
+
+  var START_RC = [0, 0];
+  var GOAL_RC = [3, 2];
+
+  // ---- Pure logic -----------------------------------------------------
+  function openSides(cell) {
+    var base = BASE_OPEN[cell.type];
+    var out = [];
+    for (var i = 0; i < base.length; i++) out.push((base[i] + cell.rot) & 3);
+    return out;
+  }
+
+  function hasOpening(cell, side) {
+    if (!cell) return false;
+    return openSides(cell).indexOf(side) !== -1;
+  }
+
+  // side index -> [dr, dc, oppositeSide]
+  var DIRS = [
+    [-1, 0, 2], // up
+    [0, 1, 3],  // right
+    [1, 0, 0],  // down
+    [0, -1, 1]  // left
+  ];
+
+  // Returns the set (as a key->true map) of cells reachable from start
+  // through connected pipes. Used both for win detection and to draw
+  // the live "water filled" highlight.
+  function reachableFrom(grid, rc) {
+    var seen = {};
+    var key = function (r, c) { return r * COLS + c; };
+    var stack = [rc];
+    seen[key(rc[0], rc[1])] = true;
+    while (stack.length) {
+      var cur = stack.pop();
+      var r = cur[0], c = cur[1];
+      for (var s = 0; s < 4; s++) {
+        var nr = r + DIRS[s][0], nc = c + DIRS[s][1], opp = DIRS[s][2];
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        if (hasOpening(grid[r][c], s) && hasOpening(grid[nr][nc], opp) && !seen[key(nr, nc)]) {
+          seen[key(nr, nc)] = true;
+          stack.push([nr, nc]);
+        }
+      }
+    }
+    return seen;
+  }
+
+  function isSolved(grid) {
+    var seen = reachableFrom(grid, START_RC);
+    return !!seen[GOAL_RC[0] * COLS + GOAL_RC[1]];
+  }
+
+  // ---- Game state -----------------------------------------------------
+  var grid, movesLeft, state; // state: 'play' | 'win' | 'lose'
+
+  function resetGame() {
+    grid = buildPuzzle();
+    movesLeft = MOVE_LIMIT;
+    state = 'play';
+  }
+
+  // ---- Rendering ------------------------------------------------------
+  var canvas = document.getElementById('game');
+  var ctx = canvas.getContext('2d');
+
+  // Logical design resolution (portrait 9:16). We render to this and let
+  // CSS scale the canvas to fit the viewport, keeping aspect ratio.
+  var W = 720, H = 1280;
+  canvas.width = W;
+  canvas.height = H;
+
+  var COLORS = {
+    bg1: '#0b1f3a',
+    bg2: '#143a66',
+    panel: '#1d4e89',
+    tile: '#2f6fb3',
+    tileEdge: '#1b4a7d',
+    pipe: '#bcd6f0',       // dry pipe
+    pipeFilled: '#39d98a', // water-filled pipe (green)
+    start: '#39d98a',
+    goal: '#ffc83d',
+    text: '#ffffff',
+    sub: '#b8d2ee',
+    instr: '#173a5e',      // instruction pill bg
+    instrText: '#ffe9a8',
+    btn: '#2bb673',
+    btnText: '#ffffff',
+    cta: '#3478f6',
+    preview: '#12365c'
+  };
+
+  // Grid geometry
+  var gridMargin = 70;
+  var gridTop = 430;
+  var cellSize = (W - gridMargin * 2) / COLS;
+  var pipeW = cellSize * 0.28; // pipe stroke thickness
+
+  function cellRect(r, c) {
+    return {
+      x: gridMargin + c * cellSize,
+      y: gridTop + r * cellSize,
+      cx: gridMargin + c * cellSize + cellSize / 2,
+      cy: gridTop + r * cellSize + cellSize / 2,
+      size: cellSize
+    };
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawArm(cx, cy, side, half, color, w) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = w;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    if (side === 0) ctx.lineTo(cx, cy - half);
+    else if (side === 1) ctx.lineTo(cx + half, cy);
+    else if (side === 2) ctx.lineTo(cx, cy + half);
+    else ctx.lineTo(cx - half, cy);
+    ctx.stroke();
+  }
+
+  // Generic tile renderer used by both the board and the preview panel.
+  function paintTile(cell, cx, cy, size, filled) {
+    var pad = size * 0.08;
+    // body
+    ctx.fillStyle = COLORS.tile;
+    roundRect(cx - size / 2 + pad, cy - size / 2 + pad, size - pad * 2, size - pad * 2, size * 0.14);
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = COLORS.tileEdge;
+    ctx.stroke();
+
+    var color = filled ? COLORS.pipeFilled : COLORS.pipe;
+    var half = size / 2 - pad;
+    var w = size * 0.26;
+    var sides = openSides(cell);
+    for (var i = 0; i < sides.length; i++) drawArm(cx, cy, sides[i], half, color, w);
+
+    // hub
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(cx, cy, w * 0.55, 0, Math.PI * 2);
+    ctx.fill();
+
+    // start / goal marker discs
+    if (cell.type === TYPE.START || cell.type === TYPE.GOAL) {
+      ctx.fillStyle = cell.type === TYPE.START ? COLORS.start : COLORS.goal;
+      ctx.beginPath();
+      ctx.arc(cx, cy, w * 1.0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#0b1f3a';
+      ctx.font = 'bold ' + Math.floor(size * 0.16) + 'px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(cell.type === TYPE.START ? 'START' : 'GOAL', cx, cy);
+    }
+  }
+
+  function drawTextCentered(text, y, size, color, weight) {
+    ctx.fillStyle = color;
+    ctx.font = (weight || 'bold') + ' ' + size + 'px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, W / 2, y);
+  }
+
+  var checkBtn = { x: gridMargin, y: gridTop + ROWS * cellSize + 45, w: W - gridMargin * 2, h: 110 };
+  var ctaBtn = { x: W / 2 - 230, y: 980, w: 460, h: 130 };
+  var replayBtn = { x: W / 2 - 230, y: 1140, w: 460, h: 95 };
+
+  function drawButton(b, label, fill, textColor) {
+    ctx.fillStyle = fill;
+    roundRect(b.x, b.y, b.w, b.h, 22);
+    ctx.fill();
+    drawTextCentered(label, b.y + b.h / 2, Math.floor(b.h * 0.32), textColor || COLORS.btnText);
+  }
+
+  function drawBackground() {
+    var g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, COLORS.bg1);
+    g.addColorStop(1, COLORS.bg2);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Rounded pill with centered text (instruction banner).
+  function drawPill(cx, y, w, h, fill, text, textColor, fontSize) {
+    ctx.fillStyle = fill;
+    roundRect(cx - w / 2, y - h / 2, w, h, h / 2);
+    ctx.fill();
+    ctx.fillStyle = textColor;
+    ctx.font = 'bold ' + fontSize + 'px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, cx, y);
+  }
+
+  // small callout label box with a connector line (wireframe-style)
+  function drawCallout(x, y, text, color) {
+    var padX = 16, fs = 22, h = 38;
+    ctx.font = 'bold ' + fs + 'px Arial';
+    var w = ctx.measureText(text).width + padX * 2;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    roundRect(x - w / 2, y - h / 2, w, h, 10);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y);
+  }
+
+  function render() {
+    drawBackground();
+
+    if (state === 'win' || state === 'lose') {
+      drawEndCard();
+      return;
+    }
+
+    // Header
+    drawTextCentered('Pipe Rescue', 100, 60, COLORS.text);
+
+    // Moves chip
+    ctx.fillStyle = COLORS.panel;
+    roundRect(W / 2 - 150, 140, 300, 72, 18);
+    ctx.fill();
+    drawTextCentered('Moves Left: ' + movesLeft, 176, 36, COLORS.text);
+
+    // Instruction pill (wireframe wording)
+    drawPill(W / 2, 270, 560, 64, COLORS.instr,
+      '💡  Tap pipe tiles to connect the path.', COLORS.instrText, 28);
+
+    // Source / Goal callouts
+    drawCallout(W / 2, 350, 'Water Source / Start  →  Goal / End', COLORS.start);
+
+    // Live water fill from the source so progress is visible before solving.
+    var filledSet = reachableFrom(grid, START_RC);
+    for (var r = 0; r < ROWS; r++) {
+      for (var c = 0; c < COLS; c++) {
+        var rc = cellRect(r, c);
+        paintTile(grid[r][c], rc.cx, rc.cy, rc.size, !!filledSet[r * COLS + c]);
+      }
+    }
+
+    drawButton(checkBtn, 'Check Path', COLORS.btn);
+
+    var connected = isSolved(grid);
+    drawTextCentered(
+      connected ? 'Status: Connected — press Check Path!' : 'Status: Not connected yet',
+      checkBtn.y + checkBtn.h + 50,
+      28,
+      connected ? COLORS.pipeFilled : COLORS.sub,
+      'normal'
+    );
+  }
+
+  function drawEndCard() {
+    var win = state === 'win';
+    drawTextCentered(win ? 'You fixed it!' : 'Out of moves!', 200, 70,
+      win ? COLORS.pipeFilled : COLORS.goal);
+    drawTextCentered(win ? 'Puzzle complete' : 'Give it another try', 270, 36, COLORS.sub, 'normal');
+
+    // Preview panel label
+    drawTextCentered(win ? 'Solved Path Preview' : 'Your Board', 350, 30, COLORS.start);
+
+    // Preview panel background
+    var pvTop = 390, pvSize = 110, pvW = COLS * pvSize, pvH = ROWS * pvSize;
+    var pvX = (W - pvW) / 2, pvY = pvTop;
+    ctx.fillStyle = COLORS.preview;
+    roundRect(pvX - 16, pvY - 16, pvW + 32, pvH + 32, 18);
+    ctx.fill();
+
+    var filledSet = reachableFrom(grid, START_RC);
+    for (var r = 0; r < ROWS; r++) {
+      for (var c = 0; c < COLS; c++) {
+        var cx = pvX + c * pvSize + pvSize / 2;
+        var cy = pvY + r * pvSize + pvSize / 2;
+        paintTile(grid[r][c], cx, cy, pvSize, !!filledSet[r * COLS + c]);
+      }
+    }
+
+    drawTextCentered(win ? 'Example of a completed connection' : '', pvY + pvH + 45, 24, COLORS.sub, 'normal');
+
+    drawButton(ctaBtn, 'Play Now', COLORS.cta);
+    drawTextCentered('Mock Call to Action', ctaBtn.y + ctaBtn.h + 28, 22, COLORS.sub, 'normal');
+    drawButton(replayBtn, win ? 'Play Again' : 'Try Again', COLORS.btn);
+  }
+
+  // ---- Input ----------------------------------------------------------
+  function canvasPoint(evt) {
+    var rect = canvas.getBoundingClientRect();
+    var src = evt.touches && evt.touches.length ? evt.touches[0] : evt;
+    var x = (src.clientX - rect.left) * (W / rect.width);
+    var y = (src.clientY - rect.top) * (H / rect.height);
+    return { x: x, y: y };
+  }
+
+  function inRect(p, b) {
+    return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+  }
+
+  function tileAt(p) {
+    for (var r = 0; r < ROWS; r++) {
+      for (var c = 0; c < COLS; c++) {
+        var rc = cellRect(r, c);
+        if (p.x >= rc.x && p.x <= rc.x + rc.size && p.y >= rc.y && p.y <= rc.y + rc.size) {
+          return [r, c];
+        }
+      }
+    }
+    return null;
+  }
+
+  function handleWin() {
+    state = 'win';
+    render();
+  }
+
+  function tryCheckPath() {
+    if (isSolved(grid)) handleWin();
+    else render();
+  }
+
+  function onTap(p) {
+    if (state === 'win' || state === 'lose') {
+      if (inRect(p, ctaBtn)) {
+        // Mock Call to Action — no real store link / SDK, just a log.
+        console.log('[Pipe Rescue] Play Now clicked — (mock CTA)');
+        flashCTA();
+        return;
+      }
+      if (inRect(p, replayBtn)) {
+        resetGame();
+        render();
+      }
+      return;
+    }
+
+    // gameplay
+    if (inRect(p, checkBtn)) {
+      tryCheckPath();
+      return;
+    }
+
+    var t = tileAt(p);
+    if (!t) return;
+    var cell = grid[t[0]][t[1]];
+    if (cell.fixed) return; // start / goal are not rotatable
+
+    cell.rot = (cell.rot + 1) & 3;
+    movesLeft--;
+
+    if (isSolved(grid)) { handleWin(); return; }
+
+    if (movesLeft <= 0) {
+      if (isSolved(grid)) { handleWin(); return; }
+      state = 'lose';
+    }
+    render();
+  }
+
+  function flashCTA() {
+    var old = COLORS.cta;
+    COLORS.cta = '#5a96ff';
+    render();
+    setTimeout(function () { COLORS.cta = old; render(); }, 120);
+  }
+
+  canvas.addEventListener('mousedown', function (e) { onTap(canvasPoint(e)); });
+  canvas.addEventListener('touchstart', function (e) {
+    e.preventDefault();
+    onTap(canvasPoint(e));
+  }, { passive: false });
+
+  // ---- Boot -----------------------------------------------------------
+  resetGame();
+  render();
+
+  // tiny debug API
+  window.PipeRescue = {
+    solve: function () {
+      grid[1][0].rot = 0; grid[2][0].rot = 3;
+      grid[2][1].rot = 1; grid[2][2].rot = 1;
+      render();
+      return isSolved(grid);
+    },
+    isSolved: function () { return isSolved(grid); },
+    reset: function () { resetGame(); render(); }
+  };
+})();
+

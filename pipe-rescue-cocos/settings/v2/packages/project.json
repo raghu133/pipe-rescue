@@ -1,0 +1,32 @@
+{
+  "general": {
+    "designResolution": {
+      "width": 720,
+      "height": 1280,
+      "fitWidth": true,
+      "fitHeight": false
+    }
+  },
+  "layer": {
+    "list": []
+  },
+  "physics": {},
+  "engine": {
+    "macroConfig": {}
+  },
+  "sorting-layer": {
+    "layers": [
+      {
+        "id": 0,
+        "name": "default",
+        "value": 0
+      }
+    ]
+  },
+  "__version__": "1.0.6",
+  "fbx": {
+    "legacyFbxImporter": {
+      "visible": true
+    }
+  }
+}
