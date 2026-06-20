@@ -124,57 +124,6 @@ the layout responsive.
 
 ---
 
-## AI / tools used
 
-- **Claude (Anthropic)** — used to plan the pipe/connectivity model, author the
-  TypeScript components and the standalone Canvas build, generate the Cocos
-  3.8 scene/meta/settings scaffolding, and write this README.
-- **Verification:** the connectivity solver and the fixed puzzle were validated
-  with small Node scripts (a brute-force search over all rotations of the path
-  tiles confirmed the full 4×4 board starts disconnected and is solvable in an
-  optimal 7 taps, within the 12-move limit). The shipped `PipeRescue.html` script
-  was then exercised end-to-end through a headless Canvas/DOM mock that simulates
-  taps and asserts the full play → win → CTA and out-of-moves → lose loops.
-- No external art assets — everything is drawn at runtime with vector graphics
-  (Canvas in the web build, `cc.Graphics` in Cocos).
-
----
-
-## Known issues / what I'd improve with more time
-
-- **One fixed puzzle.** Per the brief, only the provided fixed level's solved
-  state is detected (a generic solver was listed as a bonus, not required). The
-  flood-fill win check is already fully generic, so adding more levels is just
-  more puzzle data.
-- **No audio / particle juice.** Out of scope per the brief; with more time I'd
-  add a water-flow fill animation and a small success burst.
-- **Cocos scene built from code.** The scene file intentionally contains only a
-  Canvas + a root node with `GameController`; the rest is created at runtime.
-  This is robust and readable, but a designer-friendly version would expose the
-  grid as editable prefabs in the editor.
-- **Standalone build over `file://`.** A couple of browsers restrict local file
-  loads; serving over a local HTTP server (see *How to run*) avoids any issue.
-- **Editor would not launch on my dev machine (environment, not project).** On
-  my Windows 10 (build 19045) laptop, Cocos Creator 3.8.8 (and 3.8.7 / 3.8.5)
-  failed to open *any* project — including a brand-new empty one, and including
-  Cocos Creator's own bundled sample project (`hello-3d-world`) — crashing inside
-  the editor's own compiled asset database
-  (`builtin/asset-db/dist/worker/asset-db-manager`) with
-  `TypeError: n.map is not a function` during `initEngine` /
-  `AssetDBManager.init`, reported as `[Assets] Init asset worker failed!`. The
-  crash is entirely within the editor's bundled code, not this project. I
-  systematically ruled out: my project (a brand-new empty project and Cocos's own
-  sample project both crashed identically), the editor version (clean installs of
-  3.8.8, 3.8.7 and 3.8.5), the system locale (switched en-IN → en-US and
-  restarted), stale global/project caches (cleared and regenerated), and the
-  graphics driver (updated AMD Radeon from the 2021 build to the current 2026
-  build). None resolved it — it is a genuine editor/environment incompatibility
-  in the asset-DB worker. Because I could not run the editor locally,
-  **`build-html5/` is the canonical, tested HTML5 build** (drawn with the same
-  logic as the Cocos TypeScript components in `pipe-rescue-cocos/assets/scripts/`).
-  The Cocos source is complete and opens / builds normally on a machine with a
-  working Cocos 3.8.x editor.
-
----
 
 **Cocos Creator version:** 3.8.8 (project targets 3.8.8; tested on 3.8.5–3.8.8)  •  **Target:** Web / HTML5, portrait 9:16
